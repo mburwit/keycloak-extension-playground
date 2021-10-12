@@ -269,6 +269,12 @@
         <!-- add new extension here -->
 
         <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>withings-idp</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.jboss.resteasy</groupId>
             <artifactId>resteasy-jaxrs</artifactId>
         </dependency>
