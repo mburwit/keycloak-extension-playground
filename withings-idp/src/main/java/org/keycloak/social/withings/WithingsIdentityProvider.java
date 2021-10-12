@@ -41,7 +41,6 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
         super(session, config);
         config.setAuthorizationUrl(AUTH_URL);
         config.setTokenUrl(TOKEN_URL);
-        config.setDefaultScope(DEFAULT_SCOPE);
     }
 
     @Override
