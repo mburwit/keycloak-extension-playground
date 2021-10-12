@@ -1,40 +1,40 @@
 package org.keycloak.social.withings;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import org.jboss.logging.Logger;
+import org.keycloak.OAuth2Constants;
 import org.keycloak.broker.oidc.AbstractOAuth2IdentityProvider;
-import org.keycloak.broker.oidc.OIDCIdentityProvider;
 import org.keycloak.broker.provider.BrokeredIdentityContext;
 import org.keycloak.broker.provider.IdentityBrokerException;
 import org.keycloak.broker.provider.util.SimpleHttp;
 import org.keycloak.broker.social.SocialIdentityProvider;
-import org.keycloak.common.util.Base64;
 import org.keycloak.common.util.Time;
+import org.keycloak.events.Details;
+import org.keycloak.events.Errors;
 import org.keycloak.events.EventBuilder;
-import org.keycloak.models.FederatedIdentityModel;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.RealmModel;
+import org.keycloak.models.*;
+import org.keycloak.sessions.AuthenticationSessionModel;
+import org.keycloak.util.JsonSerialization;
 
+import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.UriInfo;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static org.keycloak.broker.oidc.OIDCIdentityProvider.ACCESS_TOKEN_EXPIRATION;
+import static org.keycloak.broker.oidc.OIDCIdentityProvider.FEDERATED_ACCESS_TOKEN_RESPONSE;
 
 public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<WithingsIdentityProviderConfig>
         implements SocialIdentityProvider<WithingsIdentityProviderConfig> {
 
-    private static final Logger log = Logger.getLogger(WithingsIdentityProvider.class);
-
     public static final String OAUTH2_PARAMETER_ACTION = "action";
     public static final String OAUTH2_PARAMETER_BODY = "body";
-    public static final String OAUTH2_PARAMETER_USER_ID = "userid";
-    public static final String OAUTH2_PARAMETER_REFRESH_TOKEN = "refresh_token";
     public static final String OAUTH2_PARAMETER_EXPIRES_IN = "expires_in";
 
     public static final String AUTH_URL = "https://account.withings.com/oauth2_user/authorize2";
     public static final String TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2";
-    public static final String DEFAULT_SCOPE = "user.info,user.activity,user.metrics";
+    public static final String DEFAULT_SCOPE = "user.info";
     public static final String ACTION_REQUEST_TOKEN = "requesttoken";
 
     public WithingsIdentityProvider(KeycloakSession session, WithingsIdentityProviderConfig config) {
@@ -49,7 +49,7 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
         return new WithingsEndpoint(callback, realm, event);
     }
 
-    protected SimpleHttp getRefreshTokenRequest(KeycloakSession session, String refreshToken, String clientId, String clientSecret) {
+    protected SimpleHttp getRefreshTokenRequest(KeycloakSession session, String refreshToken) {
         SimpleHttp refreshTokenRequest = SimpleHttp.doPost(getConfig().getTokenUrl(), session)
                 .param(OAUTH2_PARAMETER_ACTION, ACTION_REQUEST_TOKEN)
                 .param(OAUTH2_GRANT_TYPE_REFRESH_TOKEN, refreshToken)
@@ -73,68 +73,167 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
 
     public BrokeredIdentityContext getFederatedIdentity(String response) {
         String body = extractTokenFromResponse(response, getBodyResponseParameter());
-        String userId = extractTokenFromResponse(body, getUserIdResponseParameter());
-        if (userId == null) {
-            throw new IdentityBrokerException("No userId available in OAuth server response: " + response);
-        }
-        String accessToken = extractTokenFromResponse(body, getAccessTokenResponseParameter());
-        if (accessToken == null) {
-            throw new IdentityBrokerException("No access token available in OAuth server response: " + response);
-        }
-        String refreshToken = extractTokenFromResponse(body, getRefreshTokenResponseParameter());
-        if (refreshToken == null) {
-            throw new IdentityBrokerException("No refresh token available in OAuth server response: " + response);
-        }
-        int expiresIn = 0;
+        WithingsTokenResponseBody tokenResponse;
         try {
-            expiresIn = Integer.parseInt(extractTokenFromResponse(body, getExpiresInResponseParameter()));
-        } catch (NumberFormatException ignored) {
+            tokenResponse = JsonSerialization.readValue(body, WithingsTokenResponseBody.class);
+        } catch (IOException e) {
+            throw new IdentityBrokerException("Could not decode token response.", e);
         }
-        String scope = extractTokenFromResponse(body, getScopeResponseParameter());
-        if (scope == null) {
-            throw new IdentityBrokerException("No scope available in OAuth server response: " + response);
+        verifyAccessToken(tokenResponse);
+        try {
+            BrokeredIdentityContext identity = extractIdentity(tokenResponse);
+            if (getConfig().isStoreToken()) {
+                if (tokenResponse.getExpiresIn() > 0) {
+                    long accessTokenExpiration = Time.currentTime() + tokenResponse.getExpiresIn();
+                    tokenResponse.getOtherClaims().put(ACCESS_TOKEN_EXPIRATION, accessTokenExpiration);
+                    response = JsonSerialization.writeValueAsString(tokenResponse);
+                }
+                identity.setToken(response);
+            }
+            return identity;
+        } catch (Exception e) {
+            throw new IdentityBrokerException("Could not fetch attributes from token response.", e);
         }
-        BrokeredIdentityContext context = new BrokeredIdentityContext(userId);
-        log.info(Base64.encodeBytes(body.getBytes(StandardCharsets.UTF_8)));
-        context.setToken(Base64.encodeBytes(body.getBytes(StandardCharsets.UTF_8)));
-        context.getContextData().put(FEDERATED_ACCESS_TOKEN, accessToken);
-        context.getContextData().put(FEDERATED_REFRESH_TOKEN, refreshToken);
-        context.getContextData().put(OIDCIdentityProvider.ACCESS_TOKEN_EXPIRATION, expiresIn > 0 ? Time.currentTime() + expiresIn : 0);
-        context.getContextData().put(OAUTH2_PARAMETER_SCOPE, scope);
-        context.setIdp(this);
-        context.setUsername(getConfig().getAlias() + "-" + userId);
+    }
 
-        return context;
+    private void verifyAccessToken(WithingsTokenResponseBody tokenResponse) {
+        String accessToken = tokenResponse.getAccessToken();
+
+        if (accessToken == null) {
+            throw new IdentityBrokerException("No access_token from server. response='" + tokenResponse);
+        }
+    }
+
+    private BrokeredIdentityContext extractIdentity(WithingsTokenResponseBody tokenResponse) {
+        if (tokenResponse == null) {
+            throw new IdentityBrokerException("Cannot extract identity from token response: null");
+        }
+        BrokeredIdentityContext identity = new BrokeredIdentityContext(tokenResponse.getUserId());
+        identity.setBrokerUserId(getConfig().getAlias() + "." + tokenResponse.getUserId());
+        identity.setUsername(tokenResponse.getUserId());
+        identity.getContextData().put(FEDERATED_ACCESS_TOKEN_RESPONSE, tokenResponse);
+
+        return identity;
     }
 
     @Override
-    public Response retrieveToken(KeycloakSession session, FederatedIdentityModel identity) {
-        try {
-            return Response.ok(new String(Base64.decode(identity.getToken()))).build();
-        } catch (IOException e) {
-            log.error(e);
-            return null;
+    protected Response exchangeStoredToken(UriInfo uriInfo, EventBuilder event, ClientModel authorizedClient, UserSessionModel tokenUserSession, UserModel tokenSubject) {
+        FederatedIdentityModel model = session.users().getFederatedIdentity(authorizedClient.getRealm(), tokenSubject, getConfig().getAlias());
+        if (model == null || model.getToken() == null) {
+            event.detail(Details.REASON, "requested_issuer is not linked");
+            event.error(Errors.INVALID_TOKEN);
+            return exchangeNotLinked(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
         }
+        try {
+            String modelTokenString = model.getToken();
+            WithingsTokenResponseBody tokenResponse = JsonSerialization.readValue(modelTokenString, WithingsTokenResponseBody.class);
+            Integer exp = (Integer) tokenResponse.getOtherClaims().get(ACCESS_TOKEN_EXPIRATION);
+            if (exp != null && exp < Time.currentTime()) {
+                if (tokenResponse.getRefreshToken() == null) {
+                    return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
+                }
+                String response = getRefreshTokenRequest(session, tokenResponse.getRefreshToken()).asString();
+                if (response.contains("error")) {
+                    logger.debugv("Error refreshing token, refresh token expiration?: {0}", response);
+                    model.setToken(null);
+                    session.users().updateFederatedIdentity(authorizedClient.getRealm(), tokenSubject, model);
+                    event.detail(Details.REASON, "requested_issuer token expired");
+                    event.error(Errors.INVALID_TOKEN);
+                    return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
+                }
+                String body = extractTokenFromResponse(response, getBodyResponseParameter());
+                WithingsTokenResponseBody newResponse = JsonSerialization.readValue(body, WithingsTokenResponseBody.class);
+                if (newResponse.getExpiresIn() > 0) {
+                    int accessTokenExpiration = Time.currentTime() + (int) newResponse.getExpiresIn();
+                    newResponse.getOtherClaims().put(ACCESS_TOKEN_EXPIRATION, accessTokenExpiration);
+                }
+
+                if (newResponse.getRefreshToken() == null && tokenResponse.getRefreshToken() != null) {
+                    newResponse.setRefreshToken(tokenResponse.getRefreshToken());
+                }
+                response = JsonSerialization.writeValueAsString(newResponse);
+
+                String oldToken = tokenUserSession.getNote(FEDERATED_ACCESS_TOKEN);
+                if (oldToken != null && oldToken.equals(tokenResponse.getAccessToken())) {
+                    int accessTokenExpiration = newResponse.getExpiresIn() > 0 ? Time.currentTime() + (int) newResponse.getExpiresIn() : 0;
+                    tokenUserSession.setNote(FEDERATED_TOKEN_EXPIRATION, Long.toString(accessTokenExpiration));
+                    tokenUserSession.setNote(FEDERATED_REFRESH_TOKEN, newResponse.getRefreshToken());
+                    tokenUserSession.setNote(FEDERATED_ACCESS_TOKEN, newResponse.getAccessToken());
+                }
+                model.setToken(response);
+                tokenResponse = newResponse;
+            } else if (exp != null) {
+                tokenResponse.setExpiresIn(exp - Time.currentTime());
+            }
+            return exchangeTokenResponse(uriInfo, event, authorizedClient, tokenUserSession, tokenResponse);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    protected Response exchangeSessionToken(UriInfo uriInfo, EventBuilder event, ClientModel authorizedClient, UserSessionModel tokenUserSession, UserModel tokenSubject) {
+        String refreshToken = tokenUserSession.getNote(FEDERATED_REFRESH_TOKEN);
+        String accessToken = tokenUserSession.getNote(FEDERATED_ACCESS_TOKEN);
+
+        if (accessToken == null) {
+            event.detail(Details.REASON, "requested_issuer is not linked");
+            event.error(Errors.INVALID_TOKEN);
+            return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
+        }
+        try {
+            long expiration = Long.parseLong(tokenUserSession.getNote(FEDERATED_TOKEN_EXPIRATION));
+            if (expiration == 0 || expiration > Time.currentTime()) {
+                WithingsTokenResponseBody tokenResponse = new WithingsTokenResponseBody();
+                tokenResponse.setExpiresIn(expiration);
+                tokenResponse.setAccessToken(accessToken);
+                tokenResponse.setRefreshToken(null);
+                tokenResponse.getOtherClaims().put(OAuth2Constants.ISSUED_TOKEN_TYPE, OAuth2Constants.ACCESS_TOKEN_TYPE);
+                tokenResponse.getOtherClaims().put(ACCOUNT_LINK_URL, getLinkingUrl(uriInfo, authorizedClient, tokenUserSession));
+                event.success();
+                return Response.ok(tokenResponse).type(MediaType.APPLICATION_JSON_TYPE).build();
+            }
+            String response = getRefreshTokenRequest(session, refreshToken).asString();
+            if (response.contains("error")) {
+                logger.debugv("Error refreshing token, refresh token expiration?: {0}", response);
+                event.detail(Details.REASON, "requested_issuer token expired");
+                event.error(Errors.INVALID_TOKEN);
+                return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
+            }
+            String body = extractTokenFromResponse(response, getBodyResponseParameter());
+            WithingsTokenResponseBody newResponse = JsonSerialization.readValue(body, WithingsTokenResponseBody.class);
+            long accessTokenExpiration = newResponse.getExpiresIn() > 0 ? Time.currentTime() + newResponse.getExpiresIn() : 0;
+            tokenUserSession.setNote(FEDERATED_TOKEN_EXPIRATION, Long.toString(accessTokenExpiration));
+            tokenUserSession.setNote(FEDERATED_REFRESH_TOKEN, newResponse.getRefreshToken());
+            tokenUserSession.setNote(FEDERATED_ACCESS_TOKEN, newResponse.getAccessToken());
+            return exchangeTokenResponse(uriInfo, event, authorizedClient, tokenUserSession, newResponse);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private Response exchangeTokenResponse(UriInfo uriInfo, EventBuilder event, ClientModel authorizedClient, UserSessionModel tokenUserSession, WithingsTokenResponseBody response) {
+        response.setRefreshToken(null);
+        response.getOtherClaims().clear();
+        response.getOtherClaims().put(OAuth2Constants.ISSUED_TOKEN_TYPE, OAuth2Constants.ACCESS_TOKEN_TYPE);
+        response.getOtherClaims().put(ACCOUNT_LINK_URL, getLinkingUrl(uriInfo, authorizedClient, tokenUserSession));
+        event.success();
+        return Response.ok(response).type(MediaType.APPLICATION_JSON_TYPE).build();
+    }
+
+
+    @Override
+    public void authenticationFinished(AuthenticationSessionModel authSession, BrokeredIdentityContext context) {
+        WithingsTokenResponseBody tokenResponse = (WithingsTokenResponseBody) context.getContextData().get(FEDERATED_ACCESS_TOKEN_RESPONSE);
+        int currentTime = Time.currentTime();
+        long expiration = tokenResponse.getExpiresIn() > 0 ? tokenResponse.getExpiresIn() + currentTime : 0;
+        authSession.setUserSessionNote(FEDERATED_TOKEN_EXPIRATION, Long.toString(expiration));
+        authSession.setUserSessionNote(FEDERATED_REFRESH_TOKEN, tokenResponse.getRefreshToken());
+        authSession.setUserSessionNote(FEDERATED_ACCESS_TOKEN, tokenResponse.getAccessToken());
     }
 
     private String getBodyResponseParameter() {
         return OAUTH2_PARAMETER_BODY;
-    }
-
-    private String getScopeResponseParameter() {
-        return OAUTH2_PARAMETER_SCOPE;
-    }
-
-    private String getExpiresInResponseParameter() {
-        return OAUTH2_PARAMETER_EXPIRES_IN;
-    }
-
-    private String getUserIdResponseParameter() {
-        return OAUTH2_PARAMETER_USER_ID;
-    }
-
-    protected String getRefreshTokenResponseParameter() {
-        return OAUTH2_PARAMETER_REFRESH_TOKEN;
     }
 
     protected String extractTokenFromResponse(String response, String tokenName) {
@@ -145,13 +244,12 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
             try {
                 JsonNode node = mapper.readTree(response);
                 if (node.has(tokenName)) {
-                    if (OAUTH2_PARAMETER_BODY.equals(tokenName)) {
-                        String s = node.get(tokenName).toString();
-                        if (s == null || s.trim().isEmpty())
-                            return null;
-                        return s;
+                    String s;
+                    if (OAUTH2_PARAMETER_BODY.equals(tokenName) || OAUTH2_PARAMETER_EXPIRES_IN.equals(tokenName)) {
+                        s = node.get(tokenName).toString();
+                    } else {
+                        s = node.get(tokenName).textValue();
                     }
-                    String s = node.get(tokenName).textValue();
                     if (s == null || s.trim().isEmpty())
                         return null;
                     return s;
