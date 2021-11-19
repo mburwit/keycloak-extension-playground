@@ -1,14 +1,20 @@
 package de.helict.keycloak.authentication.authenticators.broker;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import org.apache.http.Consts;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
+import org.apache.http.NameValuePair;
+import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.ResponseHandler;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.conn.ssl.TrustSelfSignedStrategy;
 import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.ContentType;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.ssl.SSLContextBuilder;
 import org.apache.http.util.EntityUtils;
 import org.jboss.logging.Logger;
@@ -18,10 +24,13 @@ import org.keycloak.authentication.authenticators.broker.util.SerializedBrokered
 import org.keycloak.broker.provider.BrokeredIdentityContext;
 import org.keycloak.models.AuthenticatorConfigModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.representations.AccessTokenResponse;
 import org.keycloak.util.JsonSerialization;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
@@ -40,21 +49,35 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticator extends IdpCreateUser
             SerializedBrokeredIdentityContext serializedCtx,
             BrokeredIdentityContext brokerContext) {
 
+        AuthenticatorConfigModel config = context.getAuthenticatorConfig();
         List<String> uris = parseMultivaluedStringProperty(
-                context.getAuthenticatorConfig(),
+                config,
                 IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.CALLBACK_URI_PROPERTY,
                 registeredUser
         );
         Map<String, String> header = parseMapProperty(
-                context.getAuthenticatorConfig(),
+                config,
                 IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.CALLBACK_HEADER_PROPERTY,
                 registeredUser
         );
         String body = parseTextProperty(
-                context.getAuthenticatorConfig(),
+                config,
                 IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.CALLBACK_BODY_PROPERTY,
                 registeredUser
         );
+        if (config != null && Boolean.parseBoolean(config.getConfig().get(IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.AUTH_REQUIRED_PROPERTY))) {
+            try {
+                header.put("Authorization", issueToken(
+                        parseTextProperty(config, IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.AUTH_ENDPOINT_PROPERTY, null),
+                        parseAuthBody(config)
+                ));
+            } catch (IOException e) {
+                logger.errorf(
+                        e,
+                        "Failed to get Authorization header for POSTs after first login of user [%s] by ID provider [%s]",
+                        registeredUser.getId(), brokerContext.getIdpConfig().getAlias());
+            }
+        }
         uris.forEach(uri -> {
             try {
                 doPostFirstLoginSuccess(uri, header, body);
@@ -63,6 +86,7 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticator extends IdpCreateUser
                         e,
                         "Failed to POST to callback URI [%s] after first login of user [%s] by ID provider [%s]",
                         uri, registeredUser.getId(), brokerContext.getIdpConfig().getAlias());
+                throw new RuntimeException();
             }
         });
     }
@@ -82,6 +106,40 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticator extends IdpCreateUser
             EntityUtils.consumeQuietly(entity);
             throw new java.io.IOException("Bad status: " + status);
         }
+    }
+
+    private String issueToken(String uri, UrlEncodedFormEntity body) throws IOException {
+        HttpPost post = new HttpPost(URI.create(uri));
+        post.setEntity(body);
+
+        assert httpClient != null;
+        // Create a custom response handler
+        ResponseHandler<AccessTokenResponse> responseHandler = response -> {
+            int status = response.getStatusLine().getStatusCode();
+            if (status >= 200 && status < 300) {
+                HttpEntity responseEntity = response.getEntity();
+                return responseEntity != null ? JsonSerialization.readValue(response.getEntity().getContent(), AccessTokenResponse.class) : null;
+            } else {
+                EntityUtils.consumeQuietly(response.getEntity());
+                throw new ClientProtocolException("Could not issue auth token for sending the POSTs: " + status);
+            }
+        };
+        AccessTokenResponse accessTokenResponse = httpClient.execute(post, responseHandler);
+        return accessTokenResponse.getTokenType() + " " + accessTokenResponse.getToken();
+    }
+
+    private UrlEncodedFormEntity parseAuthBody(AuthenticatorConfigModel config) throws UnsupportedEncodingException {
+
+        List<NameValuePair> nameValuePairs = new ArrayList<>(4);
+        nameValuePairs.add(new BasicNameValuePair("grant_type", URLEncoder.encode(
+                "client_credentials", StandardCharsets.UTF_8)));
+        nameValuePairs.add(new BasicNameValuePair("client_id", URLEncoder.encode(
+                parseTextProperty(config, IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.AUTH_CLIENT_ID_PROPERTY, null), StandardCharsets.UTF_8)));
+        nameValuePairs.add(new BasicNameValuePair("client_secret", URLEncoder.encode(
+                parseTextProperty(config, IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.AUTH_CLIENT_SECRET_PROPERTY, null), StandardCharsets.UTF_8)));
+        nameValuePairs.add(new BasicNameValuePair("scope", URLEncoder.encode(
+                parseTextProperty(config, IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory.AUTH_SCOPES_PROPERTY, null), StandardCharsets.UTF_8)));
+        return new UrlEncodedFormEntity(nameValuePairs, Consts.UTF_8);
     }
 
     private Map<String, String> parseMapProperty(AuthenticatorConfigModel config,
@@ -119,7 +177,9 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticator extends IdpCreateUser
     }
 
     private String replaceVariables(String result, UserModel registeredUser) {
-        result = result.replaceAll("\\$\\{user.id}", registeredUser.getId());
+        if (registeredUser != null) {
+            result = result.replaceAll("\\$\\{user.id}", registeredUser.getId());
+        }
         return result;
     }
 
