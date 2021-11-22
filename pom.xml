@@ -59,7 +59,7 @@
         <module>simple-registration-form-action-example</module>
         <module>auth-message-of-the-day</module>
         <module>idp-withings</module>
-        <module>idp-create-user-callback</module>
+        <module>auth-send-http-post</module>
     </modules>
 
     <properties>

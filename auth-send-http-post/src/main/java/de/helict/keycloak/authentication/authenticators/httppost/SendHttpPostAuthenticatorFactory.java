@@ -1,10 +1,8 @@
-package de.helict.keycloak.authentication.authenticators.broker;
+package de.helict.keycloak.authentication.authenticators.httppost;
 
-import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.authentication.AuthenticatorFactory;
-import org.keycloak.authentication.authenticators.broker.IdpCreateUserIfUniqueAuthenticatorFactory;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
@@ -13,23 +11,22 @@ import org.keycloak.provider.ProviderConfigProperty;
 import java.util.ArrayList;
 import java.util.List;
 
-public class IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory implements AuthenticatorFactory {
-    static IdpCreateUserIfUniqueAndCallbackAuthenticator SINGLETON = new IdpCreateUserIfUniqueAndCallbackAuthenticator();
+public class SendHttpPostAuthenticatorFactory implements AuthenticatorFactory {
+    static SendHttpPostAuthenticator SINGLETON = new SendHttpPostAuthenticator();
 
-    private static final Logger logger = Logger.getLogger(IdpCreateUserIfUniqueAndCallbackAuthenticator.class);
-    public static final String PROVIDER_ID = "idp-create-user-and-callback";
-    public static final String CALLBACK_URI_PROPERTY = "user.created.callback.uri";
-    public static final String CALLBACK_BODY_PROPERTY = "user.created.callback.body";
-    public static final String CALLBACK_HEADER_PROPERTY = "user.created.callback.header";
-    public static final String AUTH_REQUIRED_PROPERTY = "user.created.callback.auth.type";
-    public static final String AUTH_ENDPOINT_PROPERTY = "user.created.callback.auth.endpoint";
-    public static final String AUTH_CLIENT_ID_PROPERTY = "user.created.callback.auth.client.id";
-    public static final String AUTH_CLIENT_SECRET_PROPERTY = "user.created.callback.auth.client.secret";
-    public static final String AUTH_SCOPES_PROPERTY = "user.created.callback.auth.client.scopes";
+    public static final String PROVIDER_ID = "send-http-post";
+    public static final String CALLBACK_URI_PROPERTY = "send.http.post.uri";
+    public static final String CALLBACK_BODY_PROPERTY = "send.http.post.body";
+    public static final String CALLBACK_HEADER_PROPERTY = "send.http.post.header";
+    public static final String AUTH_REQUIRED_PROPERTY = "send.http.post.auth.type";
+    public static final String AUTH_ENDPOINT_PROPERTY = "send.http.post.auth.endpoint";
+    public static final String AUTH_CLIENT_ID_PROPERTY = "send.http.post.auth.client.id";
+    public static final String AUTH_CLIENT_SECRET_PROPERTY = "send.http.post.auth.client.secret";
+    public static final String AUTH_SCOPES_PROPERTY = "send.http.post.auth.client.scopes";
 
     @Override
     public String getDisplayType() {
-        return "Create User If Unique And Callback";
+        return "Send HTTP POST";
     }
 
     @Override
@@ -54,7 +51,7 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory implements Aut
 
     @Override
     public String getHelpText() {
-        return "Detect if there is existing Keycloak account with same email like identity provider. If no, create new user, and send a POST to a list of callback URIs";
+        return "Send a POST to a list of URIs";
     }
 
     @Override
@@ -79,7 +76,6 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory implements Aut
 
     @Override
     public void postInit(KeycloakSessionFactory factory) {
-        logger.infof("Initialized...");
     }
 
     @Override
@@ -91,20 +87,12 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory implements Aut
     private static final List<ProviderConfigProperty> configProperties = new ArrayList<>();
 
     static {
-        ProviderConfigProperty requirePWUpdateProperty;
-        requirePWUpdateProperty = new ProviderConfigProperty();
-        requirePWUpdateProperty.setName(IdpCreateUserIfUniqueAuthenticatorFactory.REQUIRE_PASSWORD_UPDATE_AFTER_REGISTRATION);
-        requirePWUpdateProperty.setLabel("Require Password Update After Registration");
-        requirePWUpdateProperty.setType(ProviderConfigProperty.BOOLEAN_TYPE);
-        requirePWUpdateProperty.setHelpText("If this option is true and new user is successfully imported from Identity Provider to Keycloak (there is no duplicated email or username detected in Keycloak DB), then this user is required to update his password");
-        configProperties.add(requirePWUpdateProperty);
-
         ProviderConfigProperty callbackUrisProperty;
         callbackUrisProperty = new ProviderConfigProperty();
         callbackUrisProperty.setName(CALLBACK_URI_PROPERTY);
-        callbackUrisProperty.setLabel("Callback Uris");
+        callbackUrisProperty.setLabel("URIs");
         callbackUrisProperty.setType(ProviderConfigProperty.MULTIVALUED_STRING_TYPE);
-        callbackUrisProperty.setHelpText("If new user is successfully imported from Identity Provider to Keycloak (there is no duplicated email or username detected in Keycloak DB), then Keycloak will send a POST with the created user id to these URIs");
+        callbackUrisProperty.setHelpText("HTTP POST will be sent to these URIs");
         configProperties.add(callbackUrisProperty);
 
         ProviderConfigProperty bodyProperty;
@@ -126,7 +114,7 @@ public class IdpCreateUserIfUniqueAndCallbackAuthenticatorFactory implements Aut
         ProviderConfigProperty authRequiredProperty;
         authRequiredProperty = new ProviderConfigProperty();
         authRequiredProperty.setName(AUTH_REQUIRED_PROPERTY);
-        authRequiredProperty.setLabel("POSTS require Keycloak Auth");
+        authRequiredProperty.setLabel("Authentication required?");
         authRequiredProperty.setType(ProviderConfigProperty.BOOLEAN_TYPE);
         authRequiredProperty.setHelpText("If enabled, Keycloak acts as Keycloak client and retrieves a token by the endpoint specified below, which will then be used as bearer authentication for the POSTs");
         configProperties.add(authRequiredProperty);
