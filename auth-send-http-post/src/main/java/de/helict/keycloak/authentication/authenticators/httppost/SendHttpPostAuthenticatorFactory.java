@@ -12,7 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class SendHttpPostAuthenticatorFactory implements AuthenticatorFactory {
-    static SendHttpPostAuthenticator SINGLETON = new SendHttpPostAuthenticator();
 
     public static final String PROVIDER_ID = "send-http-post";
     public static final String CALLBACK_URI_PROPERTY = "send.http.post.uri";
@@ -66,7 +65,7 @@ public class SendHttpPostAuthenticatorFactory implements AuthenticatorFactory {
 
     @Override
     public Authenticator create(KeycloakSession session) {
-        return SINGLETON;
+        return new SendHttpPostAuthenticator();
     }
 
     @Override

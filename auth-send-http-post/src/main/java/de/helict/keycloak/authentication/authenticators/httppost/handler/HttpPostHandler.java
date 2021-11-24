@@ -30,15 +30,18 @@ import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
 
-import static de.helict.keycloak.authentication.authenticators.httppost.handler.HttpPostPreparer.*;
 
 public class HttpPostHandler {
 
     private static final Logger logger = Logger.getLogger(HttpPostHandler.class);
 
+    private static HttpClient httpClient;
+
     public static void handle(
             AuthenticationFlowContext context,
             UserModel registeredUser) {
+
+        httpClient = httpClient();
 
         AuthenticatorConfigModel config = context.getAuthenticatorConfig();
         List<String> uris = HttpPostPreparer.parseMultivaluedStringProperty(
@@ -46,12 +49,12 @@ public class HttpPostHandler {
                 SendHttpPostAuthenticatorFactory.CALLBACK_URI_PROPERTY,
                 registeredUser
         );
-        Map<String, String> header = parseMapProperty(
+        Map<String, String> header = HttpPostPreparer.parseMapProperty(
                 config,
                 SendHttpPostAuthenticatorFactory.CALLBACK_HEADER_PROPERTY,
                 registeredUser
         );
-        String body = parseTextProperty(
+        String body = HttpPostPreparer.parseTextProperty(
                 config,
                 SendHttpPostAuthenticatorFactory.CALLBACK_BODY_PROPERTY,
                 registeredUser
@@ -59,8 +62,8 @@ public class HttpPostHandler {
         if (config != null && Boolean.parseBoolean(config.getConfig().get(SendHttpPostAuthenticatorFactory.AUTH_REQUIRED_PROPERTY))) {
             try {
                 header.put("Authorization", issueToken(
-                        parseTextProperty(config, SendHttpPostAuthenticatorFactory.AUTH_ENDPOINT_PROPERTY, null),
-                        parseAuthBody(config)
+                        HttpPostPreparer.parseTextProperty(config, SendHttpPostAuthenticatorFactory.AUTH_ENDPOINT_PROPERTY, null),
+                        HttpPostPreparer.parseAuthBody(config)
                 ));
             } catch (IOException e) {
                 logger.errorf(
@@ -89,7 +92,6 @@ public class HttpPostHandler {
         }
         post.setEntity(new ByteArrayEntity(body.getBytes(StandardCharsets.UTF_8), ContentType.APPLICATION_JSON));
 
-        assert httpClient != null;
         HttpResponse response = httpClient.execute(post);
         int status = response.getStatusLine().getStatusCode();
         HttpEntity entity = response.getEntity();
@@ -103,7 +105,6 @@ public class HttpPostHandler {
         HttpPost post = new HttpPost(URI.create(uri));
         post.setEntity(body);
 
-        assert httpClient != null;
         // Create a custom response handler
         ResponseHandler<AccessTokenResponse> responseHandler = response -> {
             int status = response.getStatusLine().getStatusCode();
@@ -119,9 +120,8 @@ public class HttpPostHandler {
         return accessTokenResponse.getTokenType() + " " + accessTokenResponse.getToken();
     }
 
-    private static final HttpClient httpClient = initHttpClient();
 
-    private static HttpClient initHttpClient() {
+    private static HttpClient httpClient() {
         try {
             SSLContextBuilder sslContextBuilder = new SSLContextBuilder();
             sslContextBuilder.loadTrustMaterial(null, new TrustSelfSignedStrategy());
