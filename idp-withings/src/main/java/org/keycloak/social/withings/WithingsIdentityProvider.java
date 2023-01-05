@@ -117,23 +117,30 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
 
     @Override
     protected Response exchangeStoredToken(UriInfo uriInfo, EventBuilder event, ClientModel authorizedClient, UserSessionModel tokenUserSession, UserModel tokenSubject) {
+        logger.debug("[WithingsIdentityProvider::exchangeStoredToken()]");
         FederatedIdentityModel model = session.users().getFederatedIdentity(authorizedClient.getRealm(), tokenSubject, getConfig().getAlias());
         if (model == null || model.getToken() == null) {
+            logger.debug("[WithingsIdentityProvider::exchangeStoredToken()]: model == null || model.getToken() == null ");
             event.detail(Details.REASON, "requested_issuer is not linked");
             event.error(Errors.INVALID_TOKEN);
             return exchangeNotLinked(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
         }
         try {
             String modelTokenString = model.getToken();
+            logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()] - token: {0}", modelTokenString);
             WithingsTokenResponseBody tokenResponse = JsonSerialization.readValue(modelTokenString, WithingsTokenResponseBody.class);
             Integer exp = (Integer) tokenResponse.getOtherClaims().get(ACCESS_TOKEN_EXPIRATION);
-            if (exp != null && exp < Time.currentTime()) {
+            int currentTime = Time.currentTime();
+            if (exp != null && exp < currentTime) {
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: exp != null && exp[{0}] < Time.currentTime()[{1}] => access token expired!", exp, currentTime);
                 if (tokenResponse.getRefreshToken() == null) {
+                    logger.debug("[WithingsIdentityProvider::exchangeStoredToken()] - have no refresh token");
                     return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
                 }
                 String response = getRefreshTokenRequest(session, tokenResponse.getRefreshToken()).asString();
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: refreshTokenResponse: {0}", response);
                 if (response.contains("error")) {
-                    logger.debugv("Error refreshing token, refresh token expiration?: {0}", response);
+                    logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()] Error refreshing token, refresh token expiration?: {0}", response);
                     model.setToken(null);
                     session.users().updateFederatedIdentity(authorizedClient.getRealm(), tokenSubject, model);
                     event.detail(Details.REASON, "requested_issuer token expired");
@@ -141,20 +148,24 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
                     return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
                 }
                 String body = extractTokenFromResponse(response, getBodyResponseParameter());
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: refreshTokenResponse body: {0}", body);
                 WithingsTokenResponseBody newResponse = JsonSerialization.readValue(body, WithingsTokenResponseBody.class);
                 if (newResponse.getExpiresIn() > 0) {
-                    int accessTokenExpiration = Time.currentTime() + (int) newResponse.getExpiresIn();
+                    int accessTokenExpiration = currentTime + (int) newResponse.getExpiresIn();
+                    logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: setting ACCESS_TOKEN_EXPIRATION: {0}", accessTokenExpiration);
                     newResponse.getOtherClaims().put(ACCESS_TOKEN_EXPIRATION, accessTokenExpiration);
                 }
 
                 if (newResponse.getRefreshToken() == null && tokenResponse.getRefreshToken() != null) {
+                    logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: reusing previous refreshToken: {0}", tokenResponse.getRefreshToken());
                     newResponse.setRefreshToken(tokenResponse.getRefreshToken());
                 }
                 response = JsonSerialization.writeValueAsString(newResponse);
 
                 String oldToken = tokenUserSession.getNote(FEDERATED_ACCESS_TOKEN);
                 if (oldToken != null && oldToken.equals(tokenResponse.getAccessToken())) {
-                    int accessTokenExpiration = newResponse.getExpiresIn() > 0 ? Time.currentTime() + (int) newResponse.getExpiresIn() : 0;
+                    int accessTokenExpiration = newResponse.getExpiresIn() > 0 ? currentTime + (int) newResponse.getExpiresIn() : 0;
+                    logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: reusing access token with updated expiration: {0}", tokenResponse.getRefreshToken());
                     tokenUserSession.setNote(FEDERATED_TOKEN_EXPIRATION, Long.toString(accessTokenExpiration));
                     tokenUserSession.setNote(FEDERATED_REFRESH_TOKEN, newResponse.getRefreshToken());
                     tokenUserSession.setNote(FEDERATED_ACCESS_TOKEN, newResponse.getAccessToken());
@@ -162,7 +173,10 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
                 model.setToken(response);
                 tokenResponse = newResponse;
             } else if (exp != null) {
-                tokenResponse.setExpiresIn(exp - Time.currentTime());
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: expiration of stored token: {0}", exp);
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: current time: {0}", currentTime);
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: setExpiresIn({0})", exp - currentTime);
+                tokenResponse.setExpiresIn(exp - currentTime);
             }
             return exchangeTokenResponse(uriInfo, event, authorizedClient, tokenUserSession, tokenResponse);
         } catch (IOException e) {
@@ -172,36 +186,46 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
 
     @Override
     protected Response exchangeSessionToken(UriInfo uriInfo, EventBuilder event, ClientModel authorizedClient, UserSessionModel tokenUserSession, UserModel tokenSubject) {
+        logger.debug("[WithingsIdentityProvider::exchangeSessionToken()]");
         String refreshToken = tokenUserSession.getNote(FEDERATED_REFRESH_TOKEN);
         String accessToken = tokenUserSession.getNote(FEDERATED_ACCESS_TOKEN);
+        logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - current access token: {0}", accessToken);
+        logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - current refresh token: {0}", refreshToken);
 
         if (accessToken == null) {
-            event.detail(Details.REASON, "requested_issuer is not linked");
+            event.detail(Details.REASON, "SessionToken: requested_issuer is not linked");
             event.error(Errors.INVALID_TOKEN);
             return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
         }
         try {
             long expiration = Long.parseLong(tokenUserSession.getNote(FEDERATED_TOKEN_EXPIRATION));
-            if (expiration == 0 || expiration > Time.currentTime()) {
+            logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - FEDERATED_TOKEN_EXPIRATION: {0}", expiration);
+            int currentTime = Time.currentTime();
+            if (expiration == 0 || expiration > currentTime) {
+                logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - expiration == 0 || expiration > {0} => not expired", currentTime);
                 WithingsTokenResponseBody tokenResponse = new WithingsTokenResponseBody();
                 tokenResponse.setExpiresIn(expiration);
                 tokenResponse.setAccessToken(accessToken);
                 tokenResponse.setRefreshToken(null);
                 tokenResponse.getOtherClaims().put(OAuth2Constants.ISSUED_TOKEN_TYPE, OAuth2Constants.ACCESS_TOKEN_TYPE);
                 tokenResponse.getOtherClaims().put(ACCOUNT_LINK_URL, getLinkingUrl(uriInfo, authorizedClient, tokenUserSession));
+                logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - returning WithingsTokenResponse:  { expiresIn: {0}, accessToken: {1}, otherClaims: [{2}: {3}, {4]: {5}",
+                        expiration, accessToken, OAuth2Constants.ISSUED_TOKEN_TYPE, OAuth2Constants.ACCESS_TOKEN_TYPE, ACCOUNT_LINK_URL, getLinkingUrl(uriInfo, authorizedClient, tokenUserSession));
                 event.success();
                 return Response.ok(tokenResponse).type(MediaType.APPLICATION_JSON_TYPE).build();
             }
             String response = getRefreshTokenRequest(session, refreshToken).asString();
+            logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()]: refreshTokenResponse: {0}", response);
             if (response.contains("error")) {
-                logger.debugv("Error refreshing token, refresh token expiration?: {0}", response);
+                logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()] Error refreshing token, refresh token expiration?: {0}", response);
                 event.detail(Details.REASON, "requested_issuer token expired");
                 event.error(Errors.INVALID_TOKEN);
                 return exchangeTokenExpired(uriInfo, authorizedClient, tokenUserSession, tokenSubject);
             }
             String body = extractTokenFromResponse(response, getBodyResponseParameter());
+            logger.debugv("[WithingsIdentityProvider::exchangeStoredToken()]: refreshTokenResponse body: {0}", body);
             WithingsTokenResponseBody newResponse = JsonSerialization.readValue(body, WithingsTokenResponseBody.class);
-            long accessTokenExpiration = newResponse.getExpiresIn() > 0 ? Time.currentTime() + newResponse.getExpiresIn() : 0;
+            long accessTokenExpiration = newResponse.getExpiresIn() > 0 ? currentTime + newResponse.getExpiresIn() : 0;
             tokenUserSession.setNote(FEDERATED_TOKEN_EXPIRATION, Long.toString(accessTokenExpiration));
             tokenUserSession.setNote(FEDERATED_REFRESH_TOKEN, newResponse.getRefreshToken());
             tokenUserSession.setNote(FEDERATED_ACCESS_TOKEN, newResponse.getAccessToken());
@@ -216,6 +240,7 @@ public class WithingsIdentityProvider extends AbstractOAuth2IdentityProvider<Wit
         response.getOtherClaims().clear();
         response.getOtherClaims().put(OAuth2Constants.ISSUED_TOKEN_TYPE, OAuth2Constants.ACCESS_TOKEN_TYPE);
         response.getOtherClaims().put(ACCOUNT_LINK_URL, getLinkingUrl(uriInfo, authorizedClient, tokenUserSession));
+        logger.debugv("[WithingsIdentityProvider::exchangeSessionToken()] - returning 200 -OK with body: {0}", response);
         event.success();
         return Response.ok(response).type(MediaType.APPLICATION_JSON_TYPE).build();
     }

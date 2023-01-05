@@ -96,4 +96,18 @@ public class WithingsTokenResponseBody {
     public void setOtherClaims(String name, Object value) {
         otherClaims.put(name, value);
     }
+
+    @Override
+    public String toString() {
+        return "WithingsTokenResponseBody{" +
+                "userId='" + userId + '\'' +
+                ", accessToken='" + accessToken + '\'' +
+                ", refreshToken='" + refreshToken + '\'' +
+                ", expiresIn=" + expiresIn +
+                ", scope='" + scope + '\'' +
+                ", csrfToken='" + csrfToken + '\'' +
+                ", tokenType='" + tokenType + '\'' +
+                ", otherClaims=" + otherClaims +
+                '}';
+    }
 }
