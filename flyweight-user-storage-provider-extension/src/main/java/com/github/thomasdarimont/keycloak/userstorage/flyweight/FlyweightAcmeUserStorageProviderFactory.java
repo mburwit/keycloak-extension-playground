@@ -24,6 +24,9 @@ public class FlyweightAcmeUserStorageProviderFactory implements UserStorageProvi
         // this configuration is pulled from the SPI configuration of this provider in the standalone[-ha] / domain.xml
         // see setup.cli
 
+        // --spi-storage-flyweight-acme-user-some-property=hello
+        // KC_SPI_STORAGE_FLYWEIGHT_ACME_USER_SOME_PROPERTY=hello
+
         String someProperty = config.get("someProperty");
         log.infov("Configured {0} with someProperty: {1}", this, someProperty);
     }
@@ -37,7 +40,7 @@ public class FlyweightAcmeUserStorageProviderFactory implements UserStorageProvi
     public FlyweightAcmeUserStorageProvider create(KeycloakSession session, ComponentModel model) {
         // here you can setup the user storage provider, initiate some connections, etc.
 
-//        log.infov("CreateProvider {0}", List.of());
+        log.infov("CreateProvider {0}", getId());
 
         return new FlyweightAcmeUserStorageProvider(session, model, repository);
     }

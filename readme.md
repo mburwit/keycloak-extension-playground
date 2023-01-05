@@ -12,12 +12,14 @@ To build the Keycloak Project simply clone it into a directory like
 
 ```
 # The Keycloak version referenced in the pom.xml 
-KC_VERSION=15.0.2
+KC_VERSION=19.0.2
 git clone https://github.com/keycloak/keycloak
 git fetch origin --tags
 git checkout $KC_VERSION
 mvn clean install -DskipTests
 ```
+
+Note that the current Keycloak release also needs the new [keycloak-admin-ui](https://github.com/keycloak/keycloak-admin-ui) dependency. If this dependency cannot be resolved, then you need to build the [admin ui keycloak-theme](https://github.com/keycloak/keycloak-admin-ui/blob/main/keycloak-theme/README.md) first. 
 
 ## IDE Setup
 
@@ -37,9 +39,9 @@ You can access the local Keycloak instance via the URL: `http://localhost:8081/a
 ### Developing with a local h2 database
 
 ```
--Dkeycloak.bind.address=127.0.0.1
+-Dkeycloak.bind.address=0.0.0.0
 -Djava.net.preferIPv4Stack=true
--Dkeycloak.connectionsJpa.url=jdbc:h2:file:./data/keycloak_master;DB_CLOSE_ON_EXIT=FALSE
+-Dkeycloak.connectionsJpa.url=jdbc:h2:file:./data/keycloak_17_0_0_0000_master;DB_CLOSE_ON_EXIT=FALSE
 -Dkeycloak.connectionsJpa.driver=org.h2.Driver
 -Dkeycloak.connectionsJpa.driverDialect=org.hibernate.dialect.H2Dialect
 -Dkeycloak.connectionsJpa.user=sa
@@ -54,7 +56,6 @@ You can access the local Keycloak instance via the URL: `http://localhost:8081/a
 -Dkeycloak.profile=COMMUNITY
 -Dkeycloak.product.name=keycloak
 -Dproduct.name=keycloak
--Dproduct.version=15.0.x
 -Dkeycloak.profile=preview
 -Dkeycloak.hostname.frontendUrl=http://localhost:8081/auth
 -Dkeycloak.profile.feature.account2=enabled
@@ -64,9 +65,11 @@ You can access the local Keycloak instance via the URL: `http://localhost:8081/a
 -Dkeycloak.profile.feature.tokenexchange=enabled
 -Dkeycloak.profile.feature.ciba=enabled
 -Dkeycloak.profile.feature.client_policies=enabled
--Dkeycloak.profile.feature.map_storage=enabled
+-Dkeycloak.profile.feature.map_storage=disabled
+-Dkeycloak.ciba-auth-channel.ciba-http-auth-channel.httpAuthenticationChannelUri=http://localhost:7777/ciba/auth
 -Dkeycloak.theme.welcomeTheme=keycloak
--Dkeycloak.theme.dir=../simple-theme/target/theme/
+-Dkeycloak.theme.dir=../simple-theme/
+-Dresources=../simple-theme/
 ```
 
 ### Developing with a PostgreSQL database
@@ -89,7 +92,6 @@ You can access the local Keycloak instance via the URL: `http://localhost:8081/a
 -Dkeycloak.profile=COMMUNITY
 -Dkeycloak.product.name=keycloak
 -Dproduct.name=keycloak
--Dproduct.version=15.0.x
 -Dkeycloak.profile=preview
 -Dkeycloak.profile.feature.account2=enabled
 -Dkeycloak.profile.feature.account_api=enabled
@@ -98,10 +100,10 @@ You can access the local Keycloak instance via the URL: `http://localhost:8081/a
 -Dkeycloak.profile.feature.tokenexchange=enabled
 -Dkeycloak.profile.feature.ciba=enabled
 -Dkeycloak.profile.feature.client_policies=enabled
--Dkeycloak.profile.feature.map_storage=enabled
+-Dkeycloak.profile.feature.map_storage=disabled
 -Dkeycloak.theme.welcomeTheme=keycloak
--Dkeycloak.theme.dir=../simple-theme/target/theme/
--Dresources=../simple-theme/target/theme/
+-Dkeycloak.theme.dir=../simple-theme/
+-Dresources=../simple-theme/
 ```
 
 ## Developing a Keycloak extension
